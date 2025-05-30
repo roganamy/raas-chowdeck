@@ -1,261 +1,147 @@
-#######################################################
-### Custom Values for Honeycomb Refinery Helm Chart ###
-#######################################################
-customvals:
-  - &refineryCluster "hnytest"
-  - &replicaCount 1
-  # Sizing example for an m7g.large (2 vCPU, 8 GiB memory) EC2 instance
-  - &memory 5Gi # lowered to allow more memory for daemonsets and other pods monitoring the nodes
-  - &cpu 1250m # lowered to allow more memory for daemonsets and other pods monitoring the nodes
-  - &incomingQueueSize 150_000
-  - &peerQueueSize 150_000
-  - &upstreamBufferSize 50_000
-  - &peerBufferSize 100_000
-  - &spanLimit 1_000
-  - &sendDelay 10s
-  - &traceTimeout 60s
-# Sizing example for an r7g.4xlarge (16 vCPU, 128 GiB memory) EC2 instance
-# - &memory 120Gi
-# - &cpu 14
-# - &incomingQueueSize  3_000_000
-# - &peerQueueSize      3_000_000
-# - &upstreamBufferSize 1_000_000
-# - &peerBufferSize     1_000_000
-# - &spanLimit 32_000
-# - &sendDelay 10s
-# - &traceTimeout 60s
-
-###############################################################################
-### Rules: How Refinery Processes Traces - See Link Below for More Info     ###
-### https://docs.honeycomb.io/manage-data-volume/refinery/sampling-methods/ ###
-###############################################################################
-rules:
-  RulesVersion: 2
-
-  Samplers:
-    __default__:
-      RulesBasedSampler:
-        Rules:
-          - Name: Keep 500 status codes
-            SampleRate: 1
-            Conditions:
-              - Fields:
-                  - http.status_code
-                  - http.response.status_code
-                Operator: ">="
-                Value: 500
-                Datatype: int
-          - Name: Keep Type 2 GRPC Status Codes
-            SampleRate: 1
-            Conditions:
-              - Field: status_code
-                Operator: ">="
-                Value: 2
-                Datatype: int
-          - Name: Keep where error field exists
-            SampleRate: 1
-            Conditions:
-              - Field: error
-                Operator: exists
-          - Name: drop healthchecks
-            Drop: true
-            Scope: span
-            Conditions:
-              - Field: root.http.route
-                Operator: starts-with
-                Value: /healthz
-              - Fields:
-                  - http.status_code
-                  - http.response.status_code
-                Operator: "="
-                Value: 200
-                Datatype: int
-          - Name: Keep long duration traces
-            SampleRate: 1
-            Scope: span
-            Conditions:
-              - Field: trace.parent_id
-                Operator: not-exists
-              - Field: duration_ms
-                Operator: ">="
-                Value: 5000
-                Datatype: int
-          - Name: Dynamically Sample 200s through 400s
-            Conditions:
-              - Fields:
-                  - http.status_code
-                  - http.response.status_code
-                Operator: ">="
-                Value: 200
-                Datatype: int
-            Sampler:
-              EMADynamicSampler:
-                GoalSampleRate: 10 # This is a sample rate itself
-                FieldList:
-                  - service.name
-                  - http.route
-                  - http.method
-          - Name: Dynamically Sample Non-HTTP Request
-            Conditions:
-              - Field: status_code
-                Operator: "<"
-                Value: 2
-                Datatype: int
-            Sampler:
-              EMADynamicSampler:
-                GoalSampleRate: 10 # This is a sample rate itself
-                FieldList:
-                  - service.name
-                  - grpc.method
-                  - grpc.service
-          - Name: Catchall rule
-            Sampler:
-              EMAThroughputSampler:
-                GoalThroughputPerSec: 500 # This is spans per second for the entire cluster
-                UseClusterSize: true # Ensures GoalThroughputPerSec is for the full refinery cluster and not per node
-                FieldList:
-                  - service.name
-
-####################################
-### Kubernetes Pod Configuration ###
-###  - disable autoscaling       ###
-###  - set cluster node count    ###
-###  - set resource limits       ###
-###  - set node affinity         ###
-####################################
-autoscaling:
-  enabled: false
-
-replicaCount: *replicaCount
-
-resources:
-  limits:
-    cpu: *cpu
-    memory: *memory
-  requests:
-    cpu: *cpu
-    memory: *memory
-
 nodeSelector:
-  customer: *refineryCluster
+  customer: chowdeck
 
 redis:
   nodeSelector:
-    customer: *refineryCluster
+    customer: chowdeck
 
-###############################################################################
-### Config: Refinery Application Config - Affects Clustering and Monitoring ###
-### https://docs.honeycomb.io/manage-data-volume/refinery/configuration/    ###
-###############################################################################
-config:
-  Collection:
-    AvailableMemory: *memory
-    MaxMemoryPercentage: 75
-    IncomingQueueSize: *incomingQueueSize
-    PeerQueueSize: *peerQueueSize
-  BufferSizes:
-    UpstreamBufferSize: *upstreamBufferSize
-    PeerBufferSize: *peerBufferSize
-  Debugging:
-    AdditionalErrorFields:
-      - service.name
-      - trace.trace_id
-      - trace.span_id
-      - trace.parent_id
-  Logger:
-    Type: honeycomb
-    Level: warn
-  HoneycombLogger:
-    Dataset: refinery-logs
-    SamplerEnabled: false
-  LegacyMetrics:
-    Dataset: refinery-metrics
-    Enabled: true
-  OTelMetrics:
-    Dataset: refinery-otel-metrics
-    Enabled: true
-  RefineryTelemetry:
-    AddRuleReasonToTrace: true
-    AddCountsToRoot: true
-  StressRelief:
-    ActivationLevel: 85
-    DeactivationLevel: 50
-    Mode: monitor
-  Traces:
-    SendDelay: *sendDelay
-    TraceTimeout: *traceTimeout
-    SpanLimit: *spanLimit
+autoscaling:
+  enabled: false
 
-environment:
-  - name: REFINERY_HONEYCOMB_API_KEY
-    valueFrom:
-      secretKeyRef:
-        key: refinery-metrics-api-key
-        name: raas-secrets
-  - name: REFINERY_QUERY_AUTH_TOKEN
-    valueFrom:
-      secretKeyRef:
-        key: refinery-query-auth-token
-        name: raas-secrets
-  - name: POD_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: metadata.name
-  - name: OTEL_RESOURCE_ATTRIBUTES
-    value: "hostname=$(POD_NAME)"
-
-###################################################################
-### Ingress Configurations for AWS ALB -> Kubernetes Networking ###
-###  - HTTP Ingress for OTLPHTTP and Protobuff Traffic          ###
-###  - GRPC Ingress for OTLP Traffic                            ###
-###  - Both ingress configs use the same URL and port 443       ###
-###################################################################
-ingress:
-  enabled: true
-  annotations:
-    alb.ingress.kubernetes.io/backend-protocol-version: HTTP1
-    alb.ingress.kubernetes.io/certificate-arn: _replaceme_
-    alb.ingress.kubernetes.io/group.name: refinery-eks-production-group
-    alb.ingress.kubernetes.io/group.order: "2"
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
-    alb.ingress.kubernetes.io/healthcheck-path: /alive
-    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "3"
-    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true
-    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
-    external-dns.alpha.kubernetes.io/hostname: _replaceme_
-    kubernetes.io/ingress.class: alb
-  hosts:
-    - host: _replaceme_
-      path: /
-  labels: {}
+replicaCount: 3
 
 grpcIngress:
   enabled: true
   annotations:
-    alb.ingress.kubernetes.io/actions.refinery: |
-      {"type": "forward", "forwardConfig": { "targetGroups": [{"serviceName": {{ refinery | quote }}, "servicePort": "{{ 4317 }}"}] }}
-    alb.ingress.kubernetes.io/backend-protocol-version: GRPC
-    alb.ingress.kubernetes.io/certificate-arn: _replaceme_
-    alb.ingress.kubernetes.io/conditions.refinery: |
-      [{"field": "http-header", "httpHeaderConfig": {"httpHeaderName": "Content-Type", "values": ["application/grpc", "application/grpc+proto"]}}, {"field":"path-pattern","pathPatternConfig":{"values":["*"]}}]
-    alb.ingress.kubernetes.io/group.name: refinery-eks-production-group
-    alb.ingress.kubernetes.io/group.order: "1"
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
-    alb.ingress.kubernetes.io/healthcheck-path: /alive
-    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "3"
-    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true
-    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
-    external-dns.alpha.kubernetes.io/hostname: _replaceme_
     kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    external-dns.alpha.kubernetes.io/alias: "true"
+    external-dns.alpha.kubernetes.io/hostname: chowdeck.refinery.honeydemo.io
+    alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:428495456699:certificate/39f8cc4d-2cd5-4901-b091-250149430f76
+    alb.ingress.kubernetes.io/conditions.refinery-grpc: >
+      [{"field": "http-header", "httpHeaderConfig": {"httpHeaderName": "Content-Type", "values": ["application/grpc", "application/grpc+proto"]}}, {"field":"path-pattern","pathPatternConfig":{"values":["*"]}}]
+    alb.ingress.kubernetes.io/actions.refinery-grpc: >
+      {"type": "forward", "forwardConfig": { "targetGroups": [{"serviceName": {{ refinery | quote }}, "servicePort": "{{ 4317 }}"}] }}
   hosts:
-    - host: _replaceme_
+    - host: chowdeck.refinery.honeydemo.io
       path: /
-  labels: {}
+  tls:
+    - secretName: refinery-tls
+      hosts:
+        - chowdeck.refinery.honeydemo.io
+
+resources:
+  limits:
+    cpu: 3000m
+    memory: 12Gi
+  requests:
+    cpu: 2000m
+    memory: 12Gi
+
+config:
+  AddRuleReasonToTrace: true
+  AdditionalErrorFields:
+    - service.name
+    - trace.trace_id
+    - trace.span_id
+  AddSpanCountToRoot: true
+  TraceTimeout: 60s
+  CacheOverrunStrategy: impact
+  SampleCacheConfig:
+    Type: cuckoo
+  PeerManagement:
+    Strategy: hash
+  StressRelief:
+    Mode: never
+  InMemCollector:
+    CacheCapacity: 1000000
+    MaxAlloc: 10800000000
+  Logger: honeycomb
+  Metrics: honeycomb
+
+  # Add Your API Key For Your Refinery Metrics Environment/Team
+  HoneycombLogger:
+    LoggerAPIKey: hcaik_01jwgxgr5m3xagn4fb2cz9mbrqe471y0kb40y7zks5a511dfsyhcznc41w
+    LoggerDataset: refinery-logs
+    LoggerHoneycombAPI: https://api.honeycomb.io
+  HoneycombMetrics:
+    MetricsAPIKey: hcaik_01jwgxgr5m3xagn4fb2cz9mbrqe471y0kb40y7zks5a511dfsyhcznc41w
+    MetricsDataset: refinery-metrics
+    MetricsHoneycombAPI: https://api.honeycomb.io
+    MetricsReportingInterval: 30
+
+rules:
+  DryRun: false
+  Sampler: DeterministicSampler
+  SampleRate: 5
+
+  # Environment Name Here (replace "production" if that's not your env name)
+  production:
+    Sampler: RulesBasedSampler
+    rule:
+      - name: Keep 500 status codes
+        SampleRate: 1
+        condition:
+          - field: http.status_code
+            operator: ">="
+            value: 500
+            datatype: int
+      - name: Keep Type 2 GRPC Status Codes
+        SampleRate: 1
+        condition:
+          - field: rpc.grpc.status_code
+            operator: ">="
+            value: 2
+            datatype: int
+      - name: Keep where error field exists
+        SampleRate: 1
+        condition:
+          - field: error
+            operator: exists
+      - name: drop healthchecks
+        drop: true
+        condition:
+          - field: http.target
+            operator: starts-with
+            value: /health
+          - field: http.status_code
+            operator: "="
+            value: 200
+            datatype: int
+      - name: Keep long duration traces
+        SampleRate: 1
+        scope: span
+        condition:
+          - field: trace.parent_id
+            operator: does-not-exist
+          - field: duration_ms
+            operator: ">="
+            value: 1000
+            datatype: int
+      - name: Dynamically Sample 200s through 400s
+        condition:
+          - field: http.status_code
+            operator: ">="
+            value: 200
+            datatype: int
+        sampler:
+          EMADynamicSampler:
+            Sampler: EMADynamicSampler
+            GoalSampleRate: 100
+            FieldList:
+              - service.name
+              - http.target
+              - http.status_code
+              - http.method
+      - name: Catchall rule
+        sampler:
+          TotalThroughputSampler:
+            Sampler: TotalThroughputSampler
+            GoalThroughputPerSec: 100
+            ClearFrequencySec: 30
+            FieldList:
+              - service.name
+              - http.status_code
+              - status_code
