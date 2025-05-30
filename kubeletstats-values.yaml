@@ -1,0 +1,117 @@
+# This is an OTel Collector Helm Chart Values File to focus on collecting kubeletstat metrics on a specific node group
+
+mode: daemonset
+
+nodeSelector:
+  customer: hnytest
+
+service:
+  enabled: true
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+presets:
+  kubeletMetrics:
+    enabled: true
+
+config:
+  exporters:
+    otlp:
+      endpoint: api.honeycomb.io:443
+      headers:
+        X-Honeycomb-Dataset: refinery-kubeletstats
+        X-Honeycomb-Team: ${env:HONEYCOMB_API_KEY}
+
+  receivers:
+    jaeger: null
+    zipkin: null
+    otlp: null
+    kubeletstats:
+      collection_interval: 30s
+      metrics:
+        k8s.node.uptime:
+          enabled: true
+        k8s.pod.uptime:
+          enabled: true
+        container.uptime:
+          enabled: true
+        k8s.container.cpu_limit_utilization:
+          enabled: true
+        k8s.container.cpu_request_utilization:
+          enabled: true
+        k8s.container.memory_limit_utilization:
+          enabled: true
+        k8s.container.memory_request_utilization:
+          enabled: true
+        k8s.pod.cpu_limit_utilization:
+          enabled: true
+        k8s.pod.cpu_request_utilization:
+          enabled: true
+        k8s.pod.memory_limit_utilization:
+          enabled: true
+        k8s.pod.memory_request_utilization:
+          enabled: true
+
+  service:
+    extensions:
+      - health_check
+    pipelines:
+      traces: null
+      logs: null
+      metrics:
+        exporters:
+          - otlp
+        processors:
+          - batch
+        receivers:
+          - kubeletstats
+
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: true
+
+extraEnvs:
+  - name: HONEYCOMB_API_KEY
+    valueFrom:
+      secretKeyRef:
+        key: refinery-metrics-api-key
+        name: raas-secrets
+
+clusterRole:
+  create: true
+  rules:
+    - apiGroups:
+        - ""
+      resources:
+        - nodes/proxy
+      verbs:
+        - get
+    - apiGroups:
+        - ""
+      resources:
+        - nodes
+      verbs:
+        - get
+        - watch
+        - list

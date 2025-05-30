@@ -1,0 +1,46 @@
+name: Terraform Honeycomb Triggers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "terraform/**.tf"
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: raas-us1
+  HONEYCOMB_API_KEY: ${{ secrets.HONEYCOMB_API_KEY }}
+  KUBE_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+
+jobs:
+  terraform-download-apply-upload:
+    # don't run when creating the repo from this template
+    if: github.run_number != 1
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: "terraform"
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{secrets.AWS_GH_EKS_ROLE_US1}}
+          role-session-name: ci-run-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}  --kubeconfig ~/.kubeconfig
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Terraform init
+        run: terraform init
+      - name: Terraform validate
+        run: terraform validate
+      - name: Terraform apply
+        run: terraform apply -auto-approve

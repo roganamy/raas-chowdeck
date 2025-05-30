@@ -1,0 +1,61 @@
+name: refinery-deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - refinery-secrets.yaml
+      - refinery-values.yaml
+      - kubeletstats-daemonset.yaml
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: raas-us1
+permissions:
+  id-token: write # This is required for requesting the JWT
+
+jobs:
+  refinery-deploy:
+    # don't run when creating the repo from this template
+    if: github.run_number != 1
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Clone the repository
+        uses: actions/checkout@v4
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{secrets.AWS_GH_EKS_ROLE_US1}}
+          role-session-name: ci-run-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}  --kubeconfig ./kubeconfig
+          echo 'KUBE_CONFIG_DATA<<EOF' >> $GITHUB_ENV
+          echo $(cat ./kubeconfig | base64) >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
+      - name: helm deploy
+        uses: koslib/helm-eks-action@master
+        env:
+          KUBE_CONFIG_DATA: ${{ env.KUBE_CONFIG_DATA }}
+        with:
+          command: |
+            kubectl create secret generic raas-secrets --from-literal=refinery-metrics-api-key=${{ secrets.US1_REFINERY_HONEYCOMB_API_KEY }} --from-literal=refinery-query-auth-token=${{ secrets.REFINERY_QUERY_AUTH_TOKEN }} --dry-run=client -o yaml | kubectl -n ${{ vars.K8S_NAMESPACE }} apply -f -
+            helm repo add honeycomb https://honeycombio.github.io/helm-charts
+            helm repo update
+            helm upgrade -n ${{vars.K8S_NAMESPACE}} --install refinery honeycomb/refinery -f refinery-values.yaml \
+            --set ingress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"="${{ secrets.US1_ACM_ARN }}" \
+            --set ingress.annotations."external-dns\.alpha\.kubernetes\.io/hostname"="${{ secrets.US1_DNS_NAME }}" \
+            --set ingress.hosts[0].host="${{ secrets.US1_DNS_NAME }}" \
+            --set grpcIngress.annotations."alb\.ingress\.kubernetes\.io/certificate-arn"="${{ secrets.US1_ACM_ARN }}" \
+            --set grpcIngress.annotations."external-dns\.alpha\.kubernetes\.io/hostname"="${{ secrets.US1_DNS_NAME }}" \
+            --set grpcIngress.hosts[0].host="${{ secrets.US1_DNS_NAME }}" \
+            --wait --debug

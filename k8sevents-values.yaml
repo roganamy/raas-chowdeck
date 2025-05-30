@@ -1,0 +1,100 @@
+# This is an OTel Collector Helm Chart Values File to focus on K8s Events for pods on a specific group of nodes
+
+mode: deployment
+
+nodeSelector:
+  customer: hnytest
+
+service:
+  enabled: true
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 250Mi
+  requests:
+    cpu: 50m
+    memory: 100Mi
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+
+presets:
+  kubernetesEvents:
+    enabled: true
+
+config:
+  exporters:
+    otlp:
+      endpoint: api.honeycomb.io:443
+      headers:
+        X-Honeycomb-Dataset: refinery-k8s-events
+        X-Honeycomb-Team: ${env:HONEYCOMB_API_KEY}
+  processors:
+    transform/events:
+      error_mode: ignore
+      log_statements:
+        - context: log
+          statements:
+            - set(attributes["watch-type"], body["type"]) where IsMap(body) and body["type"] != nil
+            - merge_maps(attributes, body, "upsert") where IsMap(body) and body["object"] == nil
+            - merge_maps(attributes, body["object"], "upsert") where IsMap(body) and body["object"] != nil
+            - merge_maps(attributes, attributes[ "metadata"], "upsert") where IsMap(attributes["metadata"])
+            - set(attributes["k8s.pod.name"], attributes["regarding"]["name"]) where attributes["regarding"]["kind"] == "Pod"
+            - set(attributes["k8s.node.name"], attributes["regarding"]["name"]) where attributes["regarding"]["kind"] == "Node"
+            - set(attributes["k8s.job.name"], attributes["regarding"]["name"]) where attributes["regarding"]["kind"] == "Job"
+            - set(attributes["k8s.cronjob.name"], attributes["regarding"]["name"]) where attributes["regarding"]["kind"] == "CronJob"
+            - set(attributes["k8s.namespace.name"], attributes["regarding"]["namespace"]) where attributes["regarding"]["kind"] == "Pod" or attributes["regarding"]["kind"] == "Job" or attributes["regarding"]["kind"] == "CronJob"
+            - set(severity_text, attributes["type"]) where attributes["type"] == "Normal" or attributes["type"] == "Warning"
+            - set(severity_number, SEVERITY_NUMBER_INFO) where attributes["type"] == "Normal"
+            - set(severity_number, SEVERITY_NUMBER_WARN) where attributes["type"] == "Warning"
+  receivers:
+    jaeger: null
+    zipkin: null
+    otlp: null
+    k8sobjects:
+      objects:
+        - name: events
+          exclude_watch_type:
+            - DELETED
+          group: events.k8s.io
+          mode: watch
+          namespaces: [hnytest]
+
+  service:
+    extensions:
+      - health_check
+    pipelines:
+      traces: null
+      metrics: null
+      logs:
+        exporters:
+          - otlp
+        processors:
+          - transform/events
+          - batch
+        receivers:
+          - k8sobjects
+
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: true
+
+extraEnvs:
+  - name: HONEYCOMB_API_KEY
+    valueFrom:
+      secretKeyRef:
+        key: refinery-metrics-api-key
+        name: raas-secrets

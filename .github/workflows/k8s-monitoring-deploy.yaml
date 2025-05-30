@@ -1,0 +1,53 @@
+name: k8s-monitoring-deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - k8sevents-values.yaml
+      - kubeletstats-values.yaml
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: raas-us1
+permissions:
+  id-token: write # This is required for requesting the JWT
+
+jobs:
+  k8s-monitoring-deploy:
+    # don't run when creating the repo from this template
+    if: github.run_number != 1
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Clone the repository
+        uses: actions/checkout@v4
+
+      - name: AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{secrets.AWS_GH_EKS_ROLE_US1}}
+          role-session-name: ci-run-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}  --kubeconfig ./kubeconfig
+          echo 'KUBE_CONFIG_DATA<<EOF' >> $GITHUB_ENV
+          echo $(cat ./kubeconfig | base64) >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
+      - name: k8s manifest deploy
+        uses: koslib/helm-eks-action@master
+        env:
+          KUBE_CONFIG_DATA: ${{ env.KUBE_CONFIG_DATA }}
+        with:
+          command: |
+            helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+            helm repo update
+            helm upgrade -n ${{vars.K8S_NAMESPACE}} --install ${{vars.K8S_NAMESPACE}}-otelcol-kubeletstats open-telemetry/opentelemetry-collector -f kubeletstats-values.yaml --wait --debug
+            helm upgrade -n ${{vars.K8S_NAMESPACE}} --install ${{vars.K8S_NAMESPACE}}-otelcol-k8sevents open-telemetry/opentelemetry-collector -f k8sevents-values.yaml --wait --debug
